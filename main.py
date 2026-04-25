@@ -109,37 +109,48 @@ def buscar_e_salvar_fixtures(data_inicio, data_fim, status_id):
         return False
 
 def baixar_odds_pendentes(bookmaker):
-    """Passo 2: Baixa odds apenas para o que tem a flag has_odds e está pendente"""
+    """Passo 2: Baixa odds com tratamento de erro definitivo e registro de 404"""
     print(f"\n⬇️ [PASSO ODDS] Buscando na {bookmaker}...")
     conn = conectar_banco()
     if not conn: return
 
     try:
         with conn.cursor() as cur:
+            # Mantive has_odds = TRUE, mas se vir que continua vindo tudo false, 
+            # pode remover essa linha do SQL conforme conversamos.
             cur.execute("""
                 SELECT j.fixture_id, j.participant1_name, j.participant2_name 
                 FROM jogos j
                 LEFT JOIN jogos_odds o ON j.fixture_id = o.fixture_id
                 WHERE o.fixture_id IS NULL 
-                  AND j.has_odds = TRUE
+                  AND j.participant1_name NOT LIKE '%%SRL%%' -- Filtro opcional para evitar simulados
                 ORDER BY j.start_time ASC
             """)
             pendentes = cur.fetchall()
 
         if not pendentes:
-            print("✨ Nenhuma odd pendente (ou nenhum jogo com has_odds=True).")
+            print("✨ Nenhuma odd pendente no banco.")
             return
 
-        print(f"📂 Processando {len(pendentes)} jogos com odds garantidas...")
+        print(f"📂 Processando {len(pendentes)} jogos...")
 
         for f_id, home, away in pendentes:
             print(f"--- {home} vs {away} ({f_id})")
             
             tentativas = 0
+            sucesso = False
+            atraso_429 = 60 # Tempo inicial de espera para Rate Limit
+
             while tentativas < 3:
-                res = requests.get(f"{BASE_URL}/historical-odds", params={
-                    "apiKey": API_KEY, "fixtureId": f_id, "bookmakers": bookmaker
-                })
+                try:
+                    res = requests.get(f"{BASE_URL}/historical-odds", params={
+                        "apiKey": API_KEY, "fixtureId": f_id, "bookmakers": bookmaker
+                    }, timeout=20) # Timeout para não travar a conexão
+                except Exception as e:
+                    print(f"    ❌ Erro de conexão: {e}. Tentando novamente...")
+                    tentativas += 1
+                    time.sleep(5)
+                    continue
 
                 if res.status_code == 200:
                     with conn.cursor() as cur:
@@ -149,25 +160,44 @@ def baixar_odds_pendentes(bookmaker):
                         )
                         conn.commit()
                     print(f"    ✅ Salvo.")
+                    sucesso = True
                     break
-                elif res.status_code == 429:
-                    print(f"    ⏳ RATE LIMIT! Pausando 60s para resetar IP...")
-                    time.sleep(10)
-                    tentativas += 1
+
                 elif res.status_code == 404:
-                    print(f"    ⚠️ 404: Sem odds para {bookmaker}. Pulando.")
+                    print(f"    ⚠️ 404: Sem odds. Registrando vazio para ignorar no futuro.")
+                    with conn.cursor() as cur:
+                        cur.execute(
+                            "INSERT INTO jogos_odds (fixture_id, odds_brutas) VALUES (%s, %s)",
+                            (f_id, Json({"status": 404, "msg": "Sem odds na API"}))
+                        )
+                        conn.commit()
+                    sucesso = True # Consideramos sucesso pois resolvemos o problema desse ID
                     break
+
+                elif res.status_code == 429:
+                    print(f"    ⏳ RATE LIMIT! Pausando {atraso_429}s...")
+                    time.sleep(atraso_429)
+                    atraso_429 *= 2 # Dobra o tempo (Backoff Exponencial)
+                    tentativas += 1
+                    
+                    if tentativas == 3:
+                        print(f"\n🚨 [CRÍTICO] Limite de tentativas atingido por Rate Limit.")
+                        print(f"Desligando o script para proteção. Tente novamente mais tarde.")
+                        sys.exit(1) # Mata o script completamente
+
                 else:
                     print(f"    ❌ Falha (Status {res.status_code}). Tentativa {tentativas+1}/3")
-                    time.sleep(5)
+                    time.sleep(10)
                     tentativas += 1
             
-            time.sleep(5) # Delay de segurança entre requisições
+            # Delay padrão entre requisições de sucesso para evitar o 429
+            time.sleep(5) 
 
     except Exception as e:
-        print(f"⚠️ Erro nas odds: {e}")
+        print(f"⚠️ Erro inesperado no processamento: {e}")
     finally:
-        conn.close()
+        if conn:
+            conn.close()
 
 if __name__ == "__main__":
     if len(sys.argv) < 6:
