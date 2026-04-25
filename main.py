@@ -18,16 +18,17 @@ def conectar_banco():
         print(f"❌ Erro ao conectar ao banco: {e}")
         return None
 
-def buscar_e_salvar_fixtures(data_inicio, data_fim):
+def buscar_e_salvar_fixtures(data_inicio, data_fim, status_id):
     """Passo 1: Sincroniza a agenda de jogos"""
-    print(f"\n🔍 [1/2] Buscando fixtures de {data_inicio} até {data_fim}...")
+    print(f"\n🔍 [PASSO JOGOS] Buscando de {data_inicio} até {data_fim} | Status: {status_id}")
+    
     endpoint = f"{BASE_URL}/fixtures"
     params = {
         "apiKey": API_KEY,
         "sportId": 10,
         "from": data_inicio,
         "to": data_fim,
-        "hasOdds": "true"
+        "statusId": status_id
     }
 
     try:
@@ -39,6 +40,10 @@ def buscar_e_salvar_fixtures(data_inicio, data_fim):
         jogos = response.json()
         if isinstance(jogos, dict): 
             jogos = jogos.get('data', [])
+
+        if not jogos:
+            print("⚠️ Nenhum jogo encontrado para estes critérios.")
+            return True # Retorna True para não travar se o modo for 0
 
         conn = conectar_banco()
         if not conn: return False
@@ -67,15 +72,14 @@ def buscar_e_salvar_fixtures(data_inicio, data_fim):
         print(f"⚠️ Erro ao processar fixtures: {e}")
         return False
 
-def baixar_odds_pendentes():
-    """Passo 2: Baixa odds apenas para o que ainda não temos no histórico"""
-    print("\n⬇️ [2/2] Verificando odds pendentes no banco...")
+def baixar_odds_pendentes(bookmaker):
+    """Passo 2: Baixa odds para o que está no banco sem registro de odds"""
+    print(f"\n⬇️ [PASSO ODDS] Buscando na {bookmaker}...")
     conn = conectar_banco()
     if not conn: return
 
     try:
         with conn.cursor() as cur:
-            # Seleciona jogos que não possuem entrada na tabela de odds
             cur.execute("""
                 SELECT j.fixture_id, j.time_casa, j.time_fora 
                 FROM jogos j
@@ -86,18 +90,18 @@ def baixar_odds_pendentes():
             pendentes = cur.fetchall()
 
         if not pendentes:
-            print("✨ Tudo atualizado! Nenhuma odd pendente encontrada.")
+            print("✨ Nenhuma odd pendente no banco.")
             return
 
-        print(f"📂 Encontrados {len(pendentes)} jogos para baixar.")
+        print(f"📂 Processando {len(pendentes)} jogos...")
 
         for f_id, home, away in pendentes:
-            print(f"--- Baixando: {home} vs {away} ({f_id})")
+            print(f"--- {home} vs {away} ({f_id})")
             
             tentativas = 0
-            while tentativas < 5:
+            while tentativas < 3:
                 res = requests.get(f"{BASE_URL}/historical-odds", params={
-                    "apiKey": API_KEY, "fixtureId": f_id, "bookmakers": "bet365"
+                    "apiKey": API_KEY, "fixtureId": f_id, "bookmakers": bookmaker
                 })
 
                 if res.status_code == 200:
@@ -107,46 +111,47 @@ def baixar_odds_pendentes():
                             (f_id, Json(res.json()))
                         )
                         conn.commit()
-                    print(f"   ✅ Salvo com sucesso.")
+                    print(f"    ✅ Salvo.")
                     break
                 elif res.status_code == 429:
-                    wait = (tentativas + 1) * 10
-                    print(f"   ⏳ Limite atingido (429). Esperando {wait}s...")
-                    time.sleep(wait)
+                    print(f"    ⏳ Rate limit. Esperando 15s...")
+                    time.sleep(6)
                     tentativas += 1
-                elif res.status_code == 404:
-                    print(f"   ⚠️ Odds ainda não disponíveis para este jogo.")
-                    break
                 else:
-                    print(f"   ❌ Erro {res.status_code}. Pulando.")
+                    print(f"    ⚠️ Falha (Status {res.status_code}).")
                     break
             
-            time.sleep(5) # Intervalo entre requisições
+            time.sleep(5) # Intervalo entre chamadas
 
     except Exception as e:
-        print(f"⚠️ Erro no processamento de odds: {e}")
+        print(f"⚠️ Erro nas odds: {e}")
     finally:
         conn.close()
 
 if __name__ == "__main__":
-    # Validação dos argumentos de data
-    if len(sys.argv) == 3:
-        data_in = sys.argv[1]
-        data_fi = sys.argv[2]
-    else:
-        print("\n❌ Formato incorreto!")
-        print("💡 Exemplo de uso: python main.py 2026-04-26 2026-04-30")
+    if len(sys.argv) < 6:
+        print("\n❌ Parâmetros insuficientes!")
+        print("💡 Uso: python main.py [INICIO] [FIM] [STATUS] [BOOKMAKER] [MODO]")
+        print("MODOS: 0=Tudo, 1=Só Jogos, 2=Só Odds")
+        print("Ex: python main.py 2026-04-07 2026-04-09 2 bet365 0")
         sys.exit(1)
 
+    d_in, d_fi, s_id, b_maker, modo = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5]
+
     print(f"\n{'='*40}")
-    print(f"🚀 VULP AUTOMATIONS - MODO MANUAL")
+    print(f"🚀 VULP AUTOMATIONS - MODO {modo}")
     print(f"{'='*40}")
 
-    DATA_INICIO = f"{data_in}T00:00:00Z"
-    DATA_FIM = f"{data_fi}T23:59:59Z"
+    DATA_INICIO = f"{d_in}T00:00:00Z"
+    DATA_FIM = f"{d_fi}T23:59:59Z"
 
-    if buscar_e_salvar_fixtures(DATA_INICIO, DATA_FIM):
-        baixar_odds_pendentes()
+    # Lógica de Modos
+    if modo in ['0', '1']:
+        sucesso = buscar_e_salvar_fixtures(DATA_INICIO, DATA_FIM, s_id)
+    
+    if modo in ['0', '2']:
+        # Se modo 0, só entra aqui se o passo 1 funcionou (ou se ignorarmos erro de 'vazio')
+        baixar_odds_pendentes(b_maker)
     
     print(f"\n{'='*40}")
     print(f"🏁 PROCESSO FINALIZADO!")
