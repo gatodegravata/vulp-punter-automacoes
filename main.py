@@ -19,7 +19,7 @@ def conectar_banco():
         return None
 
 def buscar_e_salvar_fixtures(data_inicio, data_fim, status_id):
-    """Passo 1: Sincroniza a agenda de jogos"""
+    """Passo 1: Sincroniza a agenda de jogos completa"""
     print(f"\n🔍 [PASSO JOGOS] Buscando de {data_inicio} até {data_fim} | Status: {status_id}")
     
     endpoint = f"{BASE_URL}/fixtures"
@@ -42,8 +42,8 @@ def buscar_e_salvar_fixtures(data_inicio, data_fim, status_id):
             jogos = jogos.get('data', [])
 
         if not jogos:
-            print("⚠️ Nenhum jogo encontrado para estes critérios.")
-            return True # Retorna True para não travar se o modo for 0
+            print("⚠️ Nenhum jogo encontrado.")
+            return True
 
         conn = conectar_banco()
         if not conn: return False
@@ -52,18 +52,54 @@ def buscar_e_salvar_fixtures(data_inicio, data_fim, status_id):
             for j in jogos:
                 cur.execute("""
                     INSERT INTO jogos (
-                        fixture_id, time_casa, time_fora, liga_nome, categoria_nome, 
-                        sport_id, tournament_id, status_id, status_nome, data_inicio
-                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        fixture_id, participant1_id, participant1_name, participant1_short_name, participant1_abbr,
+                        participant2_id, participant2_name, participant2_short_name, participant2_abbr,
+                        sport_id, sport_name, tournament_id, tournament_name, tournament_slug,
+                        category_name, category_slug, season_id, status_id, status_name,
+                        has_odds, start_time, true_start_time, true_end_time, api_updated_at,
+                        external_providers
+                    ) VALUES (
+                        %(fixtureId)s, %(participant1Id)s, %(participant1Name)s, %(participant1ShortName)s, %(participant1Abbr)s,
+                        %(participant2Id)s, %(participant2Name)s, %(participant2ShortName)s, %(participant2Abbr)s,
+                        %(sportId)s, %(sportName)s, %(tournamentId)s, %(tournamentName)s, %(tournamentSlug)s,
+                        %(categoryName)s, %(categorySlug)s, %(seasonId)s, %(statusId)s, %(statusName)s,
+                        %(hasOdds)s, %(startTime)s, %(trueStartTime)s, %(trueEndTime)s, %(updatedAt)s,
+                        %(externalProviders)s
+                    )
                     ON CONFLICT (fixture_id) DO UPDATE SET
                         status_id = EXCLUDED.status_id,
-                        status_nome = EXCLUDED.status_nome,
+                        status_name = EXCLUDED.status_name,
+                        has_odds = EXCLUDED.has_odds,
+                        api_updated_at = EXCLUDED.api_updated_at,
+                        external_providers = EXCLUDED.external_providers,
                         atualizado_em = CURRENT_TIMESTAMP;
-                """, (
-                    str(j.get('fixtureId')), j.get('participant1Name'), j.get('participant2Name'),
-                    j.get('tournamentName'), j.get('categoryName'), j.get('sportId'),
-                    j.get('tournamentId'), j.get('statusId'), j.get('statusName'), j.get('startTime')
-                ))
+                """, {
+                    'fixtureId': str(j.get('fixtureId')),
+                    'participant1Id': j.get('participant1Id'),
+                    'participant1Name': j.get('participant1Name'),
+                    'participant1ShortName': j.get('participant1ShortName'),
+                    'participant1Abbr': j.get('participant1Abbr'),
+                    'participant2Id': j.get('participant2Id'),
+                    'participant2Name': j.get('participant2Name'),
+                    'participant2ShortName': j.get('participant2ShortName'),
+                    'participant2Abbr': j.get('participant2Abbr'),
+                    'sportId': j.get('sportId'),
+                    'sportName': j.get('sportName'),
+                    'tournamentId': j.get('tournamentId'),
+                    'tournamentName': j.get('tournamentName'),
+                    'tournamentSlug': j.get('tournamentSlug'),
+                    'categoryName': j.get('categoryName'),
+                    'categorySlug': j.get('categorySlug'),
+                    'seasonId': str(j.get('seasonId')) if j.get('seasonId') else None,
+                    'statusId': j.get('statusId'),
+                    'statusName': j.get('statusName'),
+                    'hasOdds': j.get('hasOdds'),
+                    'startTime': j.get('startTime'),
+                    'trueStartTime': j.get('trueStartTime'),
+                    'trueEndTime': j.get('trueEndTime'),
+                    'updatedAt': j.get('updatedAt'),
+                    'externalProviders': Json(j.get('externalProviders', {}))
+                })
             conn.commit()
         conn.close()
         print(f"✅ {len(jogos)} jogos sincronizados no banco.")
@@ -73,7 +109,7 @@ def buscar_e_salvar_fixtures(data_inicio, data_fim, status_id):
         return False
 
 def baixar_odds_pendentes(bookmaker):
-    """Passo 2: Baixa odds para o que está no banco sem registro de odds"""
+    """Passo 2: Baixa odds apenas para o que tem a flag has_odds e está pendente"""
     print(f"\n⬇️ [PASSO ODDS] Buscando na {bookmaker}...")
     conn = conectar_banco()
     if not conn: return
@@ -81,19 +117,20 @@ def baixar_odds_pendentes(bookmaker):
     try:
         with conn.cursor() as cur:
             cur.execute("""
-                SELECT j.fixture_id, j.time_casa, j.time_fora 
+                SELECT j.fixture_id, j.participant1_name, j.participant2_name 
                 FROM jogos j
                 LEFT JOIN jogos_odds o ON j.fixture_id = o.fixture_id
-                WHERE o.fixture_id IS NULL
-                ORDER BY j.data_inicio ASC
+                WHERE o.fixture_id IS NULL 
+                  AND j.has_odds = TRUE
+                ORDER BY j.start_time ASC
             """)
             pendentes = cur.fetchall()
 
         if not pendentes:
-            print("✨ Nenhuma odd pendente no banco.")
+            print("✨ Nenhuma odd pendente (ou nenhum jogo com has_odds=True).")
             return
 
-        print(f"📂 Processando {len(pendentes)} jogos...")
+        print(f"📂 Processando {len(pendentes)} jogos com odds garantidas...")
 
         for f_id, home, away in pendentes:
             print(f"--- {home} vs {away} ({f_id})")
@@ -114,14 +151,18 @@ def baixar_odds_pendentes(bookmaker):
                     print(f"    ✅ Salvo.")
                     break
                 elif res.status_code == 429:
-                    print(f"    ⏳ Rate limit. Esperando 15s...")
-                    time.sleep(6)
+                    print(f"    ⏳ RATE LIMIT! Pausando 60s para resetar IP...")
+                    time.sleep(10)
                     tentativas += 1
-                else:
-                    print(f"    ⚠️ Falha (Status {res.status_code}).")
+                elif res.status_code == 404:
+                    print(f"    ⚠️ 404: Sem odds para {bookmaker}. Pulando.")
                     break
+                else:
+                    print(f"    ❌ Falha (Status {res.status_code}). Tentativa {tentativas+1}/3")
+                    time.sleep(5)
+                    tentativas += 1
             
-            time.sleep(5) # Intervalo entre chamadas
+            time.sleep(5) # Delay de segurança entre requisições
 
     except Exception as e:
         print(f"⚠️ Erro nas odds: {e}")
@@ -130,29 +171,18 @@ def baixar_odds_pendentes(bookmaker):
 
 if __name__ == "__main__":
     if len(sys.argv) < 6:
-        print("\n❌ Parâmetros insuficientes!")
-        print("💡 Uso: python main.py [INICIO] [FIM] [STATUS] [BOOKMAKER] [MODO]")
-        print("MODOS: 0=Tudo, 1=Só Jogos, 2=Só Odds")
-        print("Ex: python main.py 2026-04-07 2026-04-09 2 bet365 0")
+        print("\n💡 Uso: python main.py [INICIO] [FIM] [STATUS] [BOOKMAKER] [MODO]")
         sys.exit(1)
 
     d_in, d_fi, s_id, b_maker, modo = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5]
 
-    print(f"\n{'='*40}")
-    print(f"🚀 VULP AUTOMATIONS - MODO {modo}")
-    print(f"{'='*40}")
-
     DATA_INICIO = f"{d_in}T00:00:00Z"
     DATA_FIM = f"{d_fi}T23:59:59Z"
 
-    # Lógica de Modos
     if modo in ['0', '1']:
-        sucesso = buscar_e_salvar_fixtures(DATA_INICIO, DATA_FIM, s_id)
+        buscar_e_salvar_fixtures(DATA_INICIO, DATA_FIM, s_id)
     
     if modo in ['0', '2']:
-        # Se modo 0, só entra aqui se o passo 1 funcionou (ou se ignorarmos erro de 'vazio')
         baixar_odds_pendentes(b_maker)
     
-    print(f"\n{'='*40}")
-    print(f"🏁 PROCESSO FINALIZADO!")
-    print(f"{'='*40}")
+    print(f"\n🏁 PROCESSO FINALIZADO!")
