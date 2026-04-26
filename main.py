@@ -205,6 +205,7 @@ if __name__ == "__main__":
 
     d_in, d_fi, s_id, b_maker, modo = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5]
 
+    # Essas variáveis aqui precisam ser passadas para a função
     DATA_INICIO = f"{d_in}T00:00:00Z"
     DATA_FIM = f"{d_fi}T23:59:59Z"
 
@@ -212,6 +213,7 @@ if __name__ == "__main__":
         buscar_e_salvar_fixtures(DATA_INICIO, DATA_FIM, s_id)
     
     if modo in ['0', '2']:
-        baixar_odds_pendentes(b_maker)
+        # O ERRO ESTÁ AQUI: Certifique-se de que as datas estão entre parênteses
+        baixar_odds_pendentes(b_maker, DATA_INICIO, DATA_FIM) 
     
     print(f"\n🏁 PROCESSO FINALIZADO!")
