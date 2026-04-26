@@ -119,4 +119,4 @@ def importar_odds_remoto(pasta_repo):
 
 if __name__ == "__main__":
     importar_jogos_remoto("jogos/odds-baixadas")
-    importar_odds_remoto("odds/april/c")
+    #importar_odds_remoto("odds/april/c")
