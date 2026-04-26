@@ -108,24 +108,23 @@ def buscar_e_salvar_fixtures(data_inicio, data_fim, status_id):
         print(f"⚠️ Erro ao processar fixtures: {e}")
         return False
 
-def baixar_odds_pendentes(bookmaker):
-    """Passo 2: Baixa odds com tratamento de erro definitivo e registro de 404"""
-    print(f"\n⬇️ [PASSO ODDS] Buscando na {bookmaker}...")
+def baixar_odds_pendentes(bookmaker, data_inicio, data_fim): # Adicione as datas aqui
+    print(f"\n⬇️ [PASSO ODDS] Buscando na {bookmaker} entre {data_inicio} e {data_fim}...")
     conn = conectar_banco()
     if not conn: return
 
     try:
         with conn.cursor() as cur:
-            # Mantive has_odds = TRUE, mas se vir que continua vindo tudo false, 
-            # pode remover essa linha do SQL conforme conversamos.
             cur.execute("""
                 SELECT j.fixture_id, j.participant1_name, j.participant2_name 
                 FROM jogos j
                 LEFT JOIN jogos_odds o ON j.fixture_id = o.fixture_id
                 WHERE o.fixture_id IS NULL 
-                  AND j.participant1_name NOT LIKE '%%SRL%%' -- Filtro opcional para evitar simulados
+                  AND j.start_time >= %s  -- Filtro de Data Início
+                  AND j.start_time <= %s  -- Filtro de Data Fim
+                  AND j.participant1_name NOT LIKE '%%SRL%%'
                 ORDER BY j.start_time ASC
-            """)
+            """, (data_inicio, data_fim)) # Passa as datas como parâmetros
             pendentes = cur.fetchall()
 
         if not pendentes:
