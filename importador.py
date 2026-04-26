@@ -118,5 +118,5 @@ def importar_odds_remoto(pasta_repo):
     print(f"✅ {total_salvo} odds importadas.")
 
 if __name__ == "__main__":
-    importar_jogos_remoto("jogos/odds-baixadas/b")
-    importar_odds_remoto("odds/april")
+    importar_jogos_remoto("jogos/odds-baixadas")
+    importar_odds_remoto("odds/april/b")
