@@ -57,14 +57,14 @@ def buscar_e_salvar_fixtures(data_inicio, data_fim, status_id):
                         sport_id, sport_name, tournament_id, tournament_name, tournament_slug,
                         category_name, category_slug, season_id, status_id, status_name,
                         has_odds, start_time, true_start_time, true_end_time, api_updated_at,
-                        external_providers
+                        external_providers, atualizado_em
                     ) VALUES (
                         %(fixtureId)s, %(participant1Id)s, %(participant1Name)s, %(participant1ShortName)s, %(participant1Abbr)s,
                         %(participant2Id)s, %(participant2Name)s, %(participant2ShortName)s, %(participant2Abbr)s,
                         %(sportId)s, %(sportName)s, %(tournamentId)s, %(tournamentName)s, %(tournamentSlug)s,
                         %(categoryName)s, %(categorySlug)s, %(seasonId)s, %(statusId)s, %(statusName)s,
                         %(hasOdds)s, %(startTime)s, %(trueStartTime)s, %(trueEndTime)s, %(updatedAt)s,
-                        %(externalProviders)s
+                        %(externalProviders)s, CURRENT_TIMESTAMP
                     )
                     ON CONFLICT (fixture_id) DO UPDATE SET
                         status_id = EXCLUDED.status_id,
@@ -108,7 +108,7 @@ def buscar_e_salvar_fixtures(data_inicio, data_fim, status_id):
         print(f"⚠️ Erro ao processar fixtures: {e}")
         return False
 
-def baixar_odds_pendentes(bookmaker, data_inicio, data_fim): # Adicione as datas aqui
+def baixar_odds_pendentes(bookmaker, data_inicio, data_fim):
     print(f"\n⬇️ [PASSO ODDS] Buscando na {bookmaker} entre {data_inicio} e {data_fim}...")
     conn = conectar_banco()
     if not conn: return
@@ -119,12 +119,18 @@ def baixar_odds_pendentes(bookmaker, data_inicio, data_fim): # Adicione as datas
                 SELECT j.fixture_id, j.participant1_name, j.participant2_name 
                 FROM jogos j
                 LEFT JOIN jogos_odds o ON j.fixture_id = o.fixture_id
-                WHERE o.fixture_id IS NULL 
-                  AND j.start_time >= %s  -- Filtro de Data Início
-                  AND j.start_time <= %s  -- Filtro de Data Fim
-                  AND j.participant1_name NOT LIKE '%%SRL%%'
+                WHERE (
+                    o.fixture_id IS NULL 
+                    OR (
+                        j.start_time <= NOW() 
+                        AND o.atualizado_em < j.start_time
+                    )
+                )
+                AND j.start_time >= %s 
+                AND j.start_time <= %s
+                AND j.participant1_name NOT LIKE '%%SRL%%'
                 ORDER BY j.start_time ASC
-            """, (data_inicio, data_fim)) # Passa as datas como parâmetros
+            """, (data_inicio, data_fim))
             pendentes = cur.fetchall()
 
         if not pendentes:
@@ -137,14 +143,13 @@ def baixar_odds_pendentes(bookmaker, data_inicio, data_fim): # Adicione as datas
             print(f"--- {home} vs {away} ({f_id})")
             
             tentativas = 0
-            sucesso = False
-            atraso_429 = 60 # Tempo inicial de espera para Rate Limit
+            atraso_429 = 60
 
             while tentativas < 3:
                 try:
                     res = requests.get(f"{BASE_URL}/historical-odds", params={
                         "apiKey": API_KEY, "fixtureId": f_id, "bookmakers": bookmaker
-                    }, timeout=20) # Timeout para não travar a conexão
+                    }, timeout=20)
                 except Exception as e:
                     print(f"    ❌ Erro de conexão: {e}. Tentando novamente...")
                     tentativas += 1
@@ -153,50 +158,50 @@ def baixar_odds_pendentes(bookmaker, data_inicio, data_fim): # Adicione as datas
 
                 if res.status_code == 200:
                     with conn.cursor() as cur:
-                        cur.execute(
-                            "INSERT INTO jogos_odds (fixture_id, odds_brutas) VALUES (%s, %s)",
-                            (f_id, Json(res.json()))
-                        )
+                        cur.execute("""
+                            INSERT INTO jogos_odds (fixture_id, odds_brutas, criado_em, atualizado_em) 
+                            VALUES (%s, %s, NOW(), NOW())
+                            ON CONFLICT (fixture_id) 
+                            DO UPDATE SET 
+                                odds_brutas = EXCLUDED.odds_brutas,
+                                atualizado_em = NOW();
+                        """, (f_id, Json(res.json())))
                         conn.commit()
-                    print(f"    ✅ Salvo.")
-                    sucesso = True
+                    print(f"    ✅ Salvo/Atualizado.")
                     break
 
                 elif res.status_code == 404:
-                    print(f"    ⚠️ 404: Sem odds. Registrando vazio para ignorar no futuro.")
+                    print(f"    ⚠️ 404: Sem cotação na API. Marcando para ignorar.")
                     with conn.cursor() as cur:
-                        cur.execute(
-                            "INSERT INTO jogos_odds (fixture_id, odds_brutas) VALUES (%s, %s)",
-                            (f_id, Json({"status": 404, "msg": "Sem odds na API"}))
-                        )
+                        cur.execute("""
+                            INSERT INTO jogos_odds (fixture_id, odds_brutas, criado_em, atualizado_em) 
+                            VALUES (%s, %s, NOW(), NOW())
+                            ON CONFLICT (fixture_id) 
+                            DO UPDATE SET 
+                                odds_brutas = EXCLUDED.odds_brutas,
+                                atualizado_em = NOW();
+                        """, (f_id, Json({"status": 404, "msg": "Sem odds na API"})))
                         conn.commit()
-                    sucesso = True # Consideramos sucesso pois resolvemos o problema desse ID
                     break
 
                 elif res.status_code == 429:
                     print(f"    ⏳ RATE LIMIT! Pausando {atraso_429}s...")
                     time.sleep(atraso_429)
-                    atraso_429 *= 2 # Dobra o tempo (Backoff Exponencial)
+                    atraso_429 *= 2
                     tentativas += 1
-                    
-                    if tentativas == 3:
-                        print(f"\n🚨 [CRÍTICO] Limite de tentativas atingido por Rate Limit.")
-                        print(f"Desligando o script para proteção. Tente novamente mais tarde.")
-                        sys.exit(1) # Mata o script completamente
+                    if tentativas == 3: sys.exit(1)
 
                 else:
                     print(f"    ❌ Falha (Status {res.status_code}). Tentativa {tentativas+1}/3")
                     time.sleep(10)
                     tentativas += 1
             
-            # Delay padrão entre requisições de sucesso para evitar o 429
             time.sleep(5) 
 
     except Exception as e:
         print(f"⚠️ Erro inesperado no processamento: {e}")
     finally:
-        if conn:
-            conn.close()
+        if conn: conn.close()
 
 if __name__ == "__main__":
     if len(sys.argv) < 6:
@@ -205,7 +210,6 @@ if __name__ == "__main__":
 
     d_in, d_fi, s_id, b_maker, modo = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5]
 
-    # Essas variáveis aqui precisam ser passadas para a função
     DATA_INICIO = f"{d_in}T00:00:00Z"
     DATA_FIM = f"{d_fi}T23:59:59Z"
 
@@ -213,7 +217,6 @@ if __name__ == "__main__":
         buscar_e_salvar_fixtures(DATA_INICIO, DATA_FIM, s_id)
     
     if modo in ['0', '2']:
-        # O ERRO ESTÁ AQUI: Certifique-se de que as datas estão entre parênteses
         baixar_odds_pendentes(b_maker, DATA_INICIO, DATA_FIM) 
     
     print(f"\n🏁 PROCESSO FINALIZADO!")
