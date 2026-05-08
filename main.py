@@ -23,15 +23,21 @@ def buscar_e_salvar_fixtures(data_inicio, data_fim, status_id):
     print(f"\n🔍 [PASSO JOGOS] Buscando de {data_inicio} até {data_fim} | Status: {status_id}")
     
     endpoint = f"{BASE_URL}/fixtures"
+    
+    # 1. Coloque apenas o que é SEMPRE obrigatório
     params = {
         "apiKey": API_KEY,
         "sportId": 10,
         "from": data_inicio,
-        "to": data_fim,
-        "statusId": status_id
+        "to": data_fim
     }
 
+    # 2. Adicione o statusId APENAS se ele for válido
+    if status_id and str(status_id).lower() != 'none':
+        params["statusId"] = status_id
+
     try:
+        # Agora o requests.get só vai enviar o statusId se ele entrou no IF acima
         response = requests.get(endpoint, params=params)
         if response.status_code != 200:
             print(f"❌ Erro na API Fixtures: {response.status_code} - {response.text}")
