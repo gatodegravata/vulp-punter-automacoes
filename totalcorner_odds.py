@@ -186,7 +186,7 @@ if __name__ == '__main__':
     # SISTEMA DE RETOMADA: Se já houver progresso salvo localmente na VPS, carrega ele
     if os.path.exists(OUTPUT_FULL_FILE):
         print(f"🔄 Arquivo de checkpoint encontrado! Retomando progresso de: {OUTPUT_FULL_FILE}")
-        df_full = pd.read_csv(OUTPUT_FULL_FILE, sep=';', encoding='utf-8-sig')
+        df_full = pd.read_csv(OUTPUT_FULL_FILE, sep=';', encoding='utf-8-sig', dtype=str)
     else:
         print(f"📥 Iniciando nova sessão de scraping. Baixando base de dados original...")
         df_full = pd.read_csv(INPUT_FILE, sep=None, engine='python', encoding='utf-8-sig')
