@@ -15,7 +15,7 @@ logging.basicConfig(
 )
 
 ########## CONFIGURAÇÕES ##############
-LIMITE_URLS = 20000       # Defina como None se quiser rodar as 150k linhas direto
+LIMITE_URLS = 140000       # Defina como None se quiser rodar as 150k linhas direto
 INPUT_FILE = "https://raw.githubusercontent.com/gatodegravata/vulp-stats/refs/heads/main/lists/jogos_2023_tc.csv"
 OUTPUT_FULL_FILE = "updated/jogos_2023_tc_atualizado.csv"  # Caminho local corrigido para VPS
 
